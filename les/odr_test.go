@@ -30,7 +30,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/eth"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/params"
@@ -38,8 +37,6 @@ import (
 )
 
 type odrTestFn func(ctx context.Context, db ethdb.Database, config *params.ChainConfig, bc *core.BlockChain, lc *light.LightChain, bhash common.Hash) []byte
-
-func TestOdrGetBlockLes1(t *testing.T) { testOdr(t, 1, 1, odrGetBlock) }
 
 func TestOdrGetBlockLes2(t *testing.T) { testOdr(t, 2, 1, odrGetBlock) }
 
@@ -56,8 +53,6 @@ func odrGetBlock(ctx context.Context, db ethdb.Database, config *params.ChainCon
 	rlp, _ := rlp.EncodeToBytes(block)
 	return rlp
 }
-
-func TestOdrGetReceiptsLes1(t *testing.T) { testOdr(t, 1, 1, odrGetReceipts) }
 
 func TestOdrGetReceiptsLes2(t *testing.T) { testOdr(t, 2, 1, odrGetReceipts) }
 
@@ -78,8 +73,6 @@ func odrGetReceipts(ctx context.Context, db ethdb.Database, config *params.Chain
 	rlp, _ := rlp.EncodeToBytes(receipts)
 	return rlp
 }
-
-func TestOdrAccountsLes1(t *testing.T) { testOdr(t, 1, 1, odrAccounts) }
 
 func TestOdrAccountsLes2(t *testing.T) { testOdr(t, 2, 1, odrAccounts) }
 
@@ -108,8 +101,6 @@ func odrAccounts(ctx context.Context, db ethdb.Database, config *params.ChainCon
 	}
 	return res
 }
-
-func TestOdrContractCallLes1(t *testing.T) { testOdr(t, 1, 2, odrContractCall) }
 
 func TestOdrContractCallLes2(t *testing.T) { testOdr(t, 2, 2, odrContractCall) }
 
@@ -160,35 +151,21 @@ func odrContractCall(ctx context.Context, db ethdb.Database, config *params.Chai
 	return res
 }
 
+// testOdr tests odr requests whose validation guaranteed by block headers.
 func testOdr(t *testing.T, protocol int, expFail uint64, fn odrTestFn) {
 	// Assemble the test environment
-	peers := newPeerSet()
-	dist := newRequestDistributor(peers, make(chan struct{}))
-	rm := newRetrieveManager(peers, dist, nil)
-	db := ethdb.NewMemDatabase()
-	ldb := ethdb.NewMemDatabase()
-	odr := NewLesOdr(ldb, light.NewChtIndexer(db, true), light.NewBloomTrieIndexer(db, true), eth.NewBloomIndexer(db, light.BloomTrieFrequency), rm)
-	pm := newTestProtocolManagerMust(t, false, 4, testChainGen, nil, nil, db)
-	lpm := newTestProtocolManagerMust(t, true, 0, nil, peers, odr, ldb)
-	_, err1, lpeer, err2 := newTestPeerPair("peer", protocol, pm, lpm)
-	select {
-	case <-time.After(time.Millisecond * 100):
-	case err := <-err1:
-		t.Fatalf("peer 1 handshake error: %v", err)
-	case err := <-err2:
-		t.Fatalf("peer 1 handshake error: %v", err)
-	}
-
-	lpm.synchronise(lpeer)
+	server, client, tearDown := newClientServerEnv(t, 4, protocol, nil, true)
+	defer tearDown()
+	client.pm.synchronise(client.rPeer)
 
 	test := func(expFail uint64) {
-		for i := uint64(0); i <= pm.blockchain.CurrentHeader().Number.Uint64(); i++ {
-			bhash := rawdb.ReadCanonicalHash(db, i)
-			b1 := fn(light.NoOdr, db, pm.chainConfig, pm.blockchain.(*core.BlockChain), nil, bhash)
+		for i := uint64(0); i <= server.pm.blockchain.CurrentHeader().Number.Uint64(); i++ {
+			bhash := rawdb.ReadCanonicalHash(server.db, i)
+			b1 := fn(light.NoOdr, server.db, server.pm.chainConfig, server.pm.blockchain.(*core.BlockChain), nil, bhash)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 			defer cancel()
-			b2 := fn(ctx, ldb, lpm.chainConfig, nil, lpm.blockchain.(*light.LightChain), bhash)
+			b2 := fn(ctx, client.db, client.pm.chainConfig, nil, client.pm.blockchain.(*light.LightChain), bhash)
 
 			eq := bytes.Equal(b1, b2)
 			exp := i < expFail
@@ -200,21 +177,20 @@ func testOdr(t *testing.T, protocol int, expFail uint64, fn odrTestFn) {
 			}
 		}
 	}
-
 	// temporarily remove peer to test odr fails
 	// expect retrievals to fail (except genesis block) without a les peer
-	peers.Unregister(lpeer.id)
+	client.peers.Unregister(client.rPeer.id)
 	time.Sleep(time.Millisecond * 10) // ensure that all peerSetNotify callbacks are executed
 	test(expFail)
 	// expect all retrievals to pass
-	peers.Register(lpeer)
+	client.peers.Register(client.rPeer)
 	time.Sleep(time.Millisecond * 10) // ensure that all peerSetNotify callbacks are executed
-	lpeer.lock.Lock()
-	lpeer.hasBlock = func(common.Hash, uint64) bool { return true }
-	lpeer.lock.Unlock()
+	client.peers.lock.Lock()
+	client.rPeer.hasBlock = func(common.Hash, uint64, bool) bool { return true }
+	client.peers.lock.Unlock()
 	test(5)
 	// still expect all retrievals to pass, now data should be cached locally
-	peers.Unregister(lpeer.id)
+	client.peers.Unregister(client.rPeer.id)
 	time.Sleep(time.Millisecond * 10) // ensure that all peerSetNotify callbacks are executed
 	test(5)
 }

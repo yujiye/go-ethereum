@@ -20,6 +20,7 @@ import (
 	"reflect"
 
 	"github.com/ethereum/go-ethereum/accounts"
+	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/p2p"
@@ -39,11 +40,11 @@ type ServiceContext struct {
 // OpenDatabase opens an existing database with the given name (or creates one
 // if no previous can be found) from within the node's data directory. If the
 // node is an ephemeral one, a memory database is returned.
-func (ctx *ServiceContext) OpenDatabase(name string, cache int, handles int) (ethdb.Database, error) {
+func (ctx *ServiceContext) OpenDatabase(name string, cache int, handles int, namespace string) (ethdb.Database, error) {
 	if ctx.config.DataDir == "" {
-		return ethdb.NewMemDatabase(), nil
+		return rawdb.NewMemoryDatabase(), nil
 	}
-	db, err := ethdb.NewLDBDatabase(ctx.config.resolvePath(name), cache, handles)
+	db, err := rawdb.NewLevelDBDatabase(ctx.config.ResolvePath(name), cache, handles, namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +55,7 @@ func (ctx *ServiceContext) OpenDatabase(name string, cache int, handles int) (et
 // and if the user actually uses persistent storage. It will return an empty string
 // for emphemeral storage and the user's own input for absolute paths.
 func (ctx *ServiceContext) ResolvePath(path string) string {
-	return ctx.config.resolvePath(path)
+	return ctx.config.ResolvePath(path)
 }
 
 // Service retrieves a currently running service registered of a specific type.
@@ -65,6 +66,12 @@ func (ctx *ServiceContext) Service(service interface{}) error {
 		return nil
 	}
 	return ErrServiceUnknown
+}
+
+// ExtRPCEnabled returns the indicator whether node enables the external
+// RPC(http, ws or graphql).
+func (ctx *ServiceContext) ExtRPCEnabled() bool {
+	return ctx.config.ExtRPCEnabled()
 }
 
 // ServiceConstructor is the function signature of the constructors needed to be
